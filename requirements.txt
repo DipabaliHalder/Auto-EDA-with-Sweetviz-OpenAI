@@ -7,3 +7,4 @@ plotly==5.13.1
 statsmodels==0.13.5
 setuptools>=65.5.0
 importlib-metadata>=4.13.0
+rich
