@@ -640,10 +640,6 @@ def visualizations_tab(df):
                                 <li><strong>Highest average {num_col_for_cat}:</strong> {highest_cat} ({cat_means[highest_cat]:.2f})</li>
                                 <li><strong>Lowest average {num_col_for_cat}:</strong> {lowest_cat} ({cat_means[lowest_cat]:.2f})</li>
                     """, unsafe_allow_html=True)
-                    
-                    if cat_means[highest_cat] > 2 * cat_means[lowest_cat]:
-                        st.markdown(f"<li><strong>Notable observation:</strong> The average {num_col_for_cat} for '{highest_cat}' is more than twice that of '{lowest_cat}'</li>", unsafe_allow_html=True)
-                    
                     st.markdown("</ul></div></div>", unsafe_allow_html=True)
 
 # Main Streamlit UI with sidebar
