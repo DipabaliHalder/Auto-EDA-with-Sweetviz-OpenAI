@@ -103,6 +103,16 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Initialize reset state tracking
+if 'reset_phase' not in st.session_state:
+    st.session_state.reset_phase = 0  # 0=normal, 1=confirmation, 2=resetting
+
+# Add file tracking variable and dynamic key generator
+if 'current_file_name' not in st.session_state:
+    st.session_state.current_file_name = None
+if 'file_uploader_key' not in st.session_state:
+    st.session_state.file_uploader_key = 0
+
 # Initialize session state variables
 if 'dataframe' not in st.session_state:
     st.session_state.dataframe = None
@@ -116,6 +126,8 @@ if 'dataset_summary' not in st.session_state:
     st.session_state.dataset_summary = None
 if 'max_rows' not in st.session_state:
     st.session_state.max_rows = 500  # Default maximum rows to analyze
+if 'file_type' not in st.session_state:
+    st.session_state.file_type = None
 
 # Function to configure OpenAI API
 def configure_openai():
@@ -239,7 +251,7 @@ def get_correlation_insight(corr_matrix):
     
     return insights[:3]  # Limit to max 3 insights
 
-# Function to display dataset tab (simplified)
+# Function to display dataset tab
 def dataset_tab(df):
     st.subheader("What is this dataset about?")
     
@@ -259,7 +271,7 @@ def dataset_tab(df):
     # Display dataset size with styled metrics
     col1, col2, col3 = st.columns(3)
     col1.metric("Rows", f"{df.shape[0]:,}")
-    col2.metric("Columns", df.shape[1])
+    col2.metric("Columns", f"{df.shape[1]}")
     col3.metric("Missing Values", f"{df.isnull().sum().sum():,}")
     
     # Display first 5 rows with better styling
@@ -367,7 +379,6 @@ def visualizations_tab(df):
         st.plotly_chart(fig, use_container_width=True)
         
         # Generate limited insights from correlation matrix
-        # Generate limited insights from correlation matrix
         correlation_insights = get_correlation_insight(corr_matrix.copy())
         if correlation_insights:
             # Build the HTML for all insights in one string
@@ -457,6 +468,7 @@ def visualizations_tab(df):
                 
                 # Determine direction
                 direction = "positive" if corr > 0 else "negative"
+                
                 # First determine the interpretation text based on correlation
                 if corr > 0.7:
                     interpretation = "As values in one variable increase, the values in the other variable strongly tend to increase as well."
@@ -599,51 +611,121 @@ def visualizations_tab(df):
             </div>
             """, unsafe_allow_html=True)
             
-            # Add relationship with numerical variable if available
-            if numerical_cols:
-                st.subheader(f"Relationship with Numerical Variables")
-                num_col_for_cat = st.selectbox(
-                    f"Select numerical variable to analyze with {selected_cat_col}:",
-                    numerical_cols
-                )
+
+# Improved function to handle file processing that checks for new files
+def process_uploaded_file(uploaded_file, max_rows):
+    """Process an uploaded file (CSV or Excel) and return a dataframe"""
+    try:
+        # Check if this is a new file
+        current_filename = uploaded_file.name if uploaded_file else None
+        
+        # If this is a new file or we don't have a dataframe, process it
+        if current_filename != st.session_state.current_file_name or st.session_state.dataframe is None:
+            # Update the current file name
+            st.session_state.current_file_name = current_filename
+            
+            # Clear the dataset summary when a new file is uploaded
+            st.session_state.dataset_summary = None
+            st.session_state.sweetviz_html = None
+            
+            # Get file extension
+            file_extension = uploaded_file.name.split(".")[-1].lower()
+            
+            # Process based on file type
+            if file_extension == 'csv':
+                df = pd.read_csv(uploaded_file)
+                file_type = "CSV"
+            elif file_extension in ['xlsx', 'xls']:
+                # For Excel files, get all sheet names
+                excel_file = pd.ExcelFile(uploaded_file)
+                sheet_names = excel_file.sheet_names
                 
-                if num_col_for_cat:
-                    # Create box plot showing distribution of numerical variable by category
-                    box_cat_fig = px.box(
-                        df, 
-                        x=selected_cat_col, 
-                        y=num_col_for_cat,
-                        title=f"Distribution of {num_col_for_cat} by {selected_cat_col}",
-                        color=selected_cat_col
+                # If there are multiple sheets, let the user choose
+                if len(sheet_names) > 1:
+                    # Store the Excel file info in session state for later use
+                    if 'excel_sheets' not in st.session_state:
+                        st.session_state.excel_sheets = sheet_names
+                    
+                    selected_sheet = st.sidebar.selectbox(
+                        "Select Excel sheet:",
+                        options=sheet_names,
+                        key="excel_sheet_selector"
                     )
-                    
-                    # Improve layout
-                    box_cat_fig.update_layout(
-                        xaxis_title=selected_cat_col,
-                        yaxis_title=num_col_for_cat,
-                        height=500,
-                        showlegend=False if len(df[selected_cat_col].unique()) > 10 else True
-                    )
-                    
-                    safe_plotly_chart(box_cat_fig)
-                    
-                    # Add category comparison insight with better styling
-                    cat_means = df.groupby(selected_cat_col)[num_col_for_cat].mean().sort_values(ascending=False)
-                    highest_cat = cat_means.index[0]
-                    lowest_cat = cat_means.index[-1]
-                    
-                    st.markdown(f"""
-                    <div class="insight-box correlation">
-                        <div class="insight-header">🔄 Relationship Insights</div>
-                        <div class="insight-content">
-                            <ul>
-                                <li><strong>Highest average {num_col_for_cat}:</strong> {highest_cat} ({cat_means[highest_cat]:.2f})</li>
-                                <li><strong>Lowest average {num_col_for_cat}:</strong> {lowest_cat} ({cat_means[lowest_cat]:.2f})</li>
-                    """, unsafe_allow_html=True)
-                    st.markdown("</ul></div></div>", unsafe_allow_html=True)
+                else:
+                    selected_sheet = sheet_names[0]
+                
+                # Load the selected sheet
+                df = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
+                file_type = f"Excel ({selected_sheet})"
+            else:
+                raise ValueError(f"Unsupported file type: {file_extension}")
+            
+            # Apply row limit if needed
+            original_row_count = len(df)
+            if len(df) > max_rows:
+                df = df.head(max_rows)
+                limit_message = f"⚠️ The {file_type} file contains {original_row_count:,} rows. Using only the first {max_rows:,} rows for analysis."
+            else:
+                limit_message = None
+            
+            return df, file_type, original_row_count, limit_message
+        else:
+            # Return the existing dataframe if no new file is uploaded
+            return st.session_state.dataframe, st.session_state.file_type, len(st.session_state.dataframe), None
+    
+    except Exception as e:
+        raise Exception(f"Error processing file: {str(e)}")
+
+# Improved function to completely reset the app state
+def clear_all_data():
+    """Function to completely reset the app state and remove temporary files"""
+    # Keep only specific keys but modify them 
+    preserved_keys = ['openai_key', 'openai_api_key', 'reset_phase', 'file_uploader_key']
+    
+    # Get all keys to delete
+    keys_to_delete = [key for key in st.session_state.keys() if key not in preserved_keys]
+    
+    # Delete those keys
+    for key in keys_to_delete:
+        del st.session_state[key]
+    
+    # Increment the file uploader key to create a fresh file uploader
+    st.session_state.file_uploader_key += 1
+    
+    # Reinitialize essential session state variables with defaults
+    st.session_state.dataframe = None
+    st.session_state.analysis_complete = False
+    st.session_state.sweetviz_html = None
+    st.session_state.dataset_summary = None
+    st.session_state.max_rows = 500
+    st.session_state.current_file_name = None
+    
+    # Remove cached Sweetviz file if it exists
+    if os.path.exists("sweetviz_report.html"):
+        try:
+            os.remove("sweetviz_report.html")
+        except Exception:
+            pass
+            
+    # Also try to clear any other temporary files
+    for temp_file in ["SWEETVIZ_REPORT.html", "SWEETVIZ_REPORT.html.bak"]:
+        if os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+            except:
+                pass
+    
+    # Set phase to trigger a rerun
+    st.session_state.reset_phase = 2
 
 # Main Streamlit UI with sidebar
 def main():
+    # Handle reset phases
+    if st.session_state.reset_phase == 2:
+        # Just finished resetting, now do a clean rerun
+        st.session_state.reset_phase = 0
+        st.rerun()
+    
     # Main title with a colorful header
     st.markdown("""
     <div style="text-align: center; padding: 1rem; margin-bottom: 1.5rem; border-radius: 10px; background: linear-gradient(90deg, #4b6cb7 0%, #182848 100%);">
@@ -657,9 +739,13 @@ def main():
     # OpenAI API configuration in sidebar
     api_configured = configure_openai()
     
-    # File upload in sidebar
+    # File upload in sidebar - Using dynamic key that changes on reset
     st.sidebar.subheader("Upload Data")
-    uploaded_file = st.sidebar.file_uploader("Upload a dataset (CSV)", type="csv")
+    uploaded_file = st.sidebar.file_uploader(
+        "Upload a dataset (CSV or Excel)", 
+        type=["csv", "xlsx", "xls"],
+        key=f"file_uploader_{st.session_state.file_uploader_key}"  # Dynamic key
+    )
     
     # Row limit configuration
     st.sidebar.subheader("Analysis Settings")
@@ -670,26 +756,38 @@ def main():
     if max_rows < 10000:
         st.sidebar.info(f"Note: For performance reasons, only the first {max_rows} rows will be used for analysis.")
     
-    # Clear data button in sidebar
-    if st.sidebar.button("Clear All Data", type="primary"):
-        st.session_state.dataframe = None
-        st.session_state.analysis_complete = False
-        st.session_state.sweetviz_html = None
-        st.session_state.dataset_summary = None
+    # Add a separator for the reset button section to make it stand out
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Reset Application")
+    
+    # Reset button handling
+    if st.session_state.reset_phase == 0:
+        # Normal state - show reset button
+        if st.sidebar.button("🗑️ Reset App", type="primary", use_container_width=True):
+            st.session_state.reset_phase = 1
+            st.rerun()
+    
+    elif st.session_state.reset_phase == 1:
+        # Confirmation state
+        st.sidebar.warning("⚠️ Are you sure? All data and analysis will be lost.")
+        col1, col2 = st.sidebar.columns(2)
         
-        # Remove cached Sweetviz file if it exists
-        if os.path.exists("sweetviz_report.html"):
-            try:
-                os.remove("sweetviz_report.html")
-            except:
-                pass
-                
-        st.rerun()
+        with col1:
+            if st.button("Cancel", use_container_width=True):
+                st.session_state.reset_phase = 0
+                st.rerun()
+        
+        with col2:
+            if st.button("Yes, Reset", type="primary", use_container_width=True):
+                with st.spinner("Resetting application..."):
+                    clear_all_data()
+                # The rerun will happen via reset_phase=2
     
     # Show app info in sidebar
+    st.sidebar.markdown("---")
     with st.sidebar.expander("About this app"):
         st.markdown("""
-        This app provides automated exploratory data analysis of CSV files with:
+        This app provides automated exploratory data analysis of CSV and Excel files with:
         
         - AI-powered dataset summaries
         - Statistical analysis & visualizations
@@ -711,7 +809,7 @@ def main():
         
         ### Getting Started:
         1. Enter your OpenAI API key in the sidebar
-        2. Upload a CSV file
+        2. Upload a CSV or Excel file
         3. Explore the automatically generated visualizations and insights
         
         ### Features:
@@ -727,27 +825,32 @@ def main():
     if uploaded_file is not None:
         try:
             with st.spinner("Loading data..."):
-                df = pd.read_csv(uploaded_file)
-                original_row_count = len(df)
+                # Use the improved file processing function
+                df, file_type, original_row_count, limit_message = process_uploaded_file(uploaded_file, max_rows)
                 
-                # Apply row limit if needed
-                if len(df) > st.session_state.max_rows:
-                    df = df.head(st.session_state.max_rows)
-                    st.warning(f"⚠️ The dataset contains {original_row_count:,} rows. Using only the first {st.session_state.max_rows:,} rows for analysis.")
+                # Display limit message if needed
+                if limit_message:
+                    st.warning(limit_message)
+                
+                # Provide feedback about the loaded file
+                st.success(f"✅ Successfully loaded {file_type} file with {df.shape[0]:,} rows and {df.shape[1]:,} columns")
                 
                 st.session_state.dataframe = df
+                st.session_state.file_type = file_type
                 st.session_state.analysis_complete = True
                 
                 # Generate Sweetviz report if not already in session state
                 if st.session_state.sweetviz_html is None:
-                    with st.spinner("Generating Sweetviz report (this may take a moment)..."):
+                    with st.spinner(f"Generating Sweetviz report for {file_type} data (this may take a moment)..."):
                         st.session_state.sweetviz_html = generate_sweetviz_report(df)
         except Exception as e:
             st.error(f"Error reading the file: {str(e)}")
+            if "Excel" in str(e):
+                st.info("💡 Tip: If you're having issues with Excel files, try saving as CSV format first or choose a different sheet.")
     
     # If no file is uploaded yet, show a prompt
     if not st.session_state.analysis_complete and uploaded_file is None:
-        st.info("👈 Please upload a CSV file in the sidebar to begin analysis.")
+        st.info("👈 Please upload a CSV or Excel file in the sidebar to begin analysis.")
     
     # Display analysis if complete
     if st.session_state.analysis_complete:
@@ -756,9 +859,9 @@ def main():
         # Show dataset overview metrics
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Rows", f"{df.shape[0]:,}")
-        col2.metric("Columns", df.shape[1])
+        col2.metric("Columns", f"{df.shape[1]:,}")
         col3.metric("Missing Values", f"{df.isnull().sum().sum():,}")
-        col4.metric("Data Types", f"{df.dtypes.nunique()}")
+        col4.metric("Data Types", f"{df.dtypes.nunique():,}")
         
         # Create tabs with the new structure
         tab1, tab2, tab3, tab4 = st.tabs(["📋 Dataset", "📊 Overview", "🔍 Visualizations", "📈 Sweetviz Report"])
@@ -784,6 +887,6 @@ def main():
                     html_content = generate_sweetviz_report(df)
                     st.components.v1.html(html_content, height=800, scrolling=True)
 
-# Main application entry point
+# Application entry point
 if __name__ == "__main__":
     main()
